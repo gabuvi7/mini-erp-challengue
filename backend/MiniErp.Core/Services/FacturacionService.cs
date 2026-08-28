@@ -24,21 +24,47 @@ public class FacturacionService
             .FirstOrDefaultAsync(p => p.Id == presupuestoId)
             ?? throw new InvalidOperationException("El presupuesto no existe.");
 
+        if (presupuesto.Estado == EstadoPresupuesto.Facturado
+            || await _db.Facturas.AnyAsync(f => f.PresupuestoId == presupuestoId))
+            throw new InvalidOperationException("El presupuesto ya fue facturado.");
+
+        if (presupuesto.Estado != EstadoPresupuesto.Aprobado)
+            throw new InvalidOperationException("El presupuesto no está aprobado.");
+
         var vencimiento = presupuesto.Fecha.AddDays(presupuesto.ValidezDias);
         if (DateTime.UtcNow > vencimiento)
-            throw new InvalidOperationException("El presupuesto esta vencido y no se puede facturar.");
+            throw new InvalidOperationException("El presupuesto está vencido y no se puede facturar.");
 
-        foreach (var item in presupuesto.Items)
+        if (presupuesto.Items.Count == 0)
+            throw new InvalidOperationException("El presupuesto no tiene artículos para facturar.");
+
+        var cantidadesPorArticulo = presupuesto.Items
+            .GroupBy(i => i.ArticuloId)
+            .ToDictionary(g => g.Key, g => g.Sum(i => i.Cantidad));
+
+        var articuloIds = cantidadesPorArticulo.Keys.ToList();
+        var articulos = await _db.Articulos
+            .Where(a => articuloIds.Contains(a.Id))
+            .ToDictionaryAsync(a => a.Id);
+
+        foreach (var (articuloId, cantidad) in cantidadesPorArticulo)
         {
-            var articulo = await _db.Articulos.FirstAsync(a => a.Id == item.ArticuloId);
-            articulo.StockActual -= item.Cantidad;
+            if (!articulos.TryGetValue(articuloId, out var articulo))
+                throw new InvalidOperationException($"El artículo {articuloId} no existe.");
+
+            if (articulo.StockActual < cantidad)
+                throw new InvalidOperationException($"Stock insuficiente para el artículo {articuloId}.");
         }
 
         var totales = _presupuestos.CalcularTotales(presupuesto);
+        var numeroFactura = await _numeracion.ProximoNumeroFacturaAsync();
+
+        foreach (var (articuloId, cantidad) in cantidadesPorArticulo)
+            articulos[articuloId].StockActual -= cantidad;
 
         var factura = new Factura
         {
-            Numero = await _numeracion.ProximoNumeroFacturaAsync(),
+            Numero = numeroFactura,
             Fecha = DateTime.UtcNow,
             PresupuestoId = presupuesto.Id,
             Subtotal = totales.Subtotal,
@@ -48,7 +74,23 @@ public class FacturacionService
 
         presupuesto.Estado = EstadoPresupuesto.Facturado;
         _db.Facturas.Add(factura);
-        await _db.SaveChangesAsync();
+
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (EsConflictoDeFacturacion(ex))
+        {
+            throw new InvalidOperationException("El presupuesto ya fue facturado.", ex);
+        }
+
         return factura;
+    }
+
+    private static bool EsConflictoDeFacturacion(DbUpdateException exception)
+    {
+        return exception.InnerException?.Message.Contains(
+            "Facturas.PresupuestoId",
+            StringComparison.OrdinalIgnoreCase) == true;
     }
 }

@@ -24,13 +24,15 @@ public class PresupuestoService
     public Totales CalcularTotales(Presupuesto presupuesto)
     {
         decimal subtotal = 0m;
+        decimal iva = 0m;
+
         foreach (var item in presupuesto.Items)
         {
             var subtotalLinea = item.Cantidad * item.PrecioUnitario * (1 - item.DescuentoPct / 100m);
             subtotal += subtotalLinea;
+            iva += decimal.Round(subtotalLinea * item.AlicuotaIva / 100m, 2, MidpointRounding.AwayFromZero);
         }
 
-        var iva = subtotal * 0.21m;
         var total = subtotal + iva;
 
         return new Totales(subtotal, iva, total);
@@ -38,12 +40,34 @@ public class PresupuestoService
 
     public async Task<Presupuesto> CrearAsync(int clienteId, int validezDias, List<PresupuestoItem> items)
     {
+        if (items is null || items.Count == 0)
+            throw new InvalidOperationException("El presupuesto debe tener al menos un artículo.");
+
+        if (validezDias <= 0)
+            throw new InvalidOperationException("La validez debe ser mayor que cero días.");
+
+        if (!await _db.Clientes.AnyAsync(c => c.Id == clienteId))
+            throw new InvalidOperationException($"El cliente {clienteId} no existe.");
+
         foreach (var item in items)
         {
-            var articulo = await _db.Articulos.FirstOrDefaultAsync(a => a.Id == item.ArticuloId)
-                ?? throw new InvalidOperationException($"El articulo {item.ArticuloId} no existe.");
+            if (item.Cantidad <= 0)
+                throw new InvalidOperationException("La cantidad de cada artículo debe ser mayor que cero.");
 
-            // Tomamos precio y alicuota actuales del articulo como snapshot.
+            if (item.DescuentoPct < 0m || item.DescuentoPct > 100m)
+                throw new InvalidOperationException("El descuento debe estar entre 0 y 100.");
+        }
+
+        var articuloIds = items.Select(i => i.ArticuloId).Distinct().ToList();
+        var articulos = await _db.Articulos
+            .Where(a => articuloIds.Contains(a.Id))
+            .ToDictionaryAsync(a => a.Id);
+
+        foreach (var item in items)
+        {
+            if (!articulos.TryGetValue(item.ArticuloId, out var articulo))
+                throw new InvalidOperationException($"El artículo {item.ArticuloId} no existe.");
+
             item.PrecioUnitario = articulo.PrecioUnitario;
             item.AlicuotaIva = articulo.AlicuotaIva;
         }
@@ -53,7 +77,7 @@ public class PresupuestoService
             Numero = await _numeracion.ProximoNumeroPresupuestoAsync(),
             Fecha = DateTime.UtcNow,
             ClienteId = clienteId,
-            Estado = EstadoPresupuesto.Borrador,
+            Estado = EstadoPresupuesto.Aprobado,
             ValidezDias = validezDias,
             Items = items
         };

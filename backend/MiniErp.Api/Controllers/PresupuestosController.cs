@@ -31,15 +31,15 @@ public class PresupuestosController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<PresupuestoDto>> Crear([FromBody] CrearPresupuestoRequest request)
     {
-        var items = request.Items.Select(i => new PresupuestoItem
-        {
-            ArticuloId = i.ArticuloId,
-            Cantidad = i.Cantidad,
-            DescuentoPct = i.DescuentoPct
-        }).ToList();
-
         try
         {
+            var items = request.Items?.Select(i => new PresupuestoItem
+            {
+                ArticuloId = i.ArticuloId,
+                Cantidad = i.Cantidad,
+                DescuentoPct = i.DescuentoPct
+            }).ToList() ?? new List<PresupuestoItem>();
+
             var creado = await _service.CrearAsync(request.ClienteId, request.ValidezDias, items);
             var completo = await _service.ObtenerAsync(creado.Id);
             return Ok(MapToDto(completo!));

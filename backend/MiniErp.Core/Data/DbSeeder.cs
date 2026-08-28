@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using MiniErp.Core.Models;
 
 namespace MiniErp.Core.Data;
@@ -7,6 +8,7 @@ public static class DbSeeder
     public static void Seed(AppDbContext db)
     {
         db.Database.EnsureCreated();
+        EnsureCurrentSchema(db);
         if (db.Articulos.Any()) return;
 
         db.Clientes.AddRange(
@@ -25,5 +27,38 @@ public static class DbSeeder
         );
 
         db.SaveChanges();
+    }
+
+    private static void EnsureCurrentSchema(AppDbContext db)
+    {
+        db.Database.ExecuteSqlRaw(
+            """
+            CREATE TABLE IF NOT EXISTS "Numeraciones" (
+                "Clave" TEXT NOT NULL CONSTRAINT "PK_Numeraciones" PRIMARY KEY,
+                "UltimoNumero" INTEGER NOT NULL
+            );
+            """);
+
+        var duplicatePresupuestoIds = db.Facturas
+            .AsNoTracking()
+            .GroupBy(factura => factura.PresupuestoId)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .OrderBy(id => id)
+            .ToList();
+
+        if (duplicatePresupuestoIds.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"No se puede iniciar la aplicación porque los presupuestos {string.Join(", ", duplicatePresupuestoIds)} tienen facturas duplicadas. " +
+                "Debe reconciliar los datos de facturación duplicados antes de reiniciar la aplicación.");
+        }
+
+        db.Database.ExecuteSqlRaw(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_Presupuestos_Numero" ON "Presupuestos" ("Numero");
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_Facturas_Numero" ON "Facturas" ("Numero");
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_Facturas_PresupuestoId" ON "Facturas" ("PresupuestoId");
+            """);
     }
 }
